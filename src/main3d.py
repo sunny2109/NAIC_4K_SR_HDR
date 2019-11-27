@@ -78,7 +78,7 @@ def train():
             lres, hres = batch_input[0], batch_input[1]
             lres = lres.view(lres.shape[0], net.nframes, lres.shape[1]//net.nframes, lres.shape[2], lres.shape[3])
             lres = lres.permute(0,2,1,3,4).contiguous()
-            lres, hres = lres.cuda(), hres.cuda()
+            lres, hres = lres.to(device), hres.to(device)
             lres /= net.value_in_max
             hres /= net.value_out_max
 
@@ -167,7 +167,7 @@ def test_model():
             lres, hres = batch_input[0], batch_input[1]
             lres = lres.view(lres.shape[0], net.nframes, lres.shape[1]//net.nframes, lres.shape[2], lres.shape[3])
             lres = lres.permute(0,2,1,3,4).contiguous()
-            lres, hres = lres.cuda(), hres.cuda()
+            lres, hres = lres.to(device), hres.to(device)
             lres = lres/net.value_in_max
             hres = hres/net.value_out_max
 
@@ -243,6 +243,51 @@ def predict_model(result_subdir):
             sres_ch = dataset.sres_to_ch(sres.round().astype(dtype))
             np.savez_compressed(self.path_to_save, y=sres_ch[0], u=sres_ch[1], v=sres_ch[2])
 
+        
+    def x8_transform(x:torch.FloatTensor, id:int):
+        if id == 0:
+            return x
+        elif id == 1:
+            return x.rot90(1, [-2,-1])
+        elif id == 2:
+            return x.rot90(2, [-2,-1])
+        elif id == 3:
+            return x.rot90(3, [-2,-1])
+        elif id == 4:
+            return x.flip(-1)
+        elif id == 5:
+            return x.flip(-1).rot90(1, [-2, -1])
+        elif id == 6:
+            return x.flip(-1).rot90(2, [-2, -1])
+        elif id == 7:
+            return x.flip(-1).rot90(3, [-2, -1])
+        
+    def x8_inv_transform(x:torch.FloatTensor, id:int):
+        if id == 0:
+            return x
+        elif id == 1:
+            return x.rot90(3, [-2,-1])
+        elif id == 2:
+            return x.rot90(2, [-2,-1])
+        elif id == 3:
+            return x.rot90(1, [-2,-1])
+        elif id == 4:
+            return x.flip(-1)
+        elif id == 5:
+            return x.rot90(3, [-2, -1]).flip(-1)
+        elif id == 6:
+            return x.rot90(2, [-2, -1]).flip(-1)
+        elif id == 7:
+            return x.rot90(1, [-2, -1]).flip(-1)
+        
+
+    x8 = input('if x8 forward ? (y/N)')
+    if 'y' in x8.lower():
+        x8 = True
+        result_subdir = result_subdir + '_x8'
+    else:
+        x8 = False
+
     workers = []
     worker_limit = 15
 
@@ -262,15 +307,30 @@ def predict_model(result_subdir):
     t1 = time.time()
     with torch.no_grad():
         for batch_input in test_loader:
-            lres:torch.FloatTensor = batch_input.cuda()
+            lres:torch.FloatTensor = batch_input.to(device)
             lres = lres.view(lres.shape[0], net.nframes, lres.shape[1]//net.nframes, lres.shape[2], lres.shape[3])
             lres = lres.permute(0,2,1,3,4).contiguous()
             lres = lres/net.value_in_max
 
-            sres = model(lres)
-            sres.detach()
-            sres = torch.clamp(sres, 0, 1)
+            if x8:
+                sres_x8 = []
+                for i in range(8):
+                    lres_x8 = x8_transform(lres, i)
 
+                    sres = model(lres_x8)
+                    sres.detach()
+                    sres = torch.clamp(sres, 0, 1)
+                    sres_x8.append(x8_inv_transform(sres, i))
+                sres = sres_x8[0]
+                for i in range(1,8):
+                    sres += sres_x8[i]
+                sres /= 8
+                sres = torch.clamp(sres, 0, 1)
+            else:
+                sres = model(lres)
+                sres.detach()
+                sres = torch.clamp(sres, 0, 1)
+    
             vidx, fidx, _, _= test_dataset.keys[n_count-1]
             t = WorkerSaveNpz(sres.cpu(), net.value_out_max,
                 os.path.join(dir_result, result_subdir, test_dataset.videos[vidx], test_dataset.frames[vidx][fidx]))
