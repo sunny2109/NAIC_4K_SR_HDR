@@ -1,0 +1,100 @@
+import argparse
+import os
+import cv2
+import os.path as osp
+import glob
+import numpy as np
+import torch
+import torch.backends.cudnn as cudnn
+from collections import OrderedDict
+from tqdm import tqdm
+import torch.nn as nn
+# from model.rcan import RCAN
+from model.model import Net
+
+def main(arg):
+    print("====>> Read file list")
+    # test_img_folder = '/media/ltelab/D/caiqiuyu/data/VideoSR/image/test_lr'
+    test_img_folder = args.test_data
+    folder_lists = sorted(os.listdir(test_img_folder))
+    device = torch.device('cuda')  # if you want to run on CPU, change 'cuda' -> cpu
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    torch.cuda.manual_seed(args.seed)
+
+    cudnn.benchmark = True
+    print("===> Building model")
+    model = Net(arg)
+    model = model.cuda()
+
+    # if arg.ckp:
+    #     if os.path.isfile(args.ckp):
+    #         print("=> loading checkpoint '{}'".format(arg.ckp))
+    #         checkpoint = torch.load(arg.ckp)
+    #         new_state_dict = OrderedDict()
+    #         for k, v in checkpoint.items():
+    #             namekey = k[7:]  # remove `module.`
+    #             new_state_dict[namekey] = v
+    #         # load params
+    #         model.load_state_dict(new_state_dict)
+    #     else:
+    #         print("=> no checkpoint found at '{}'".format(args.ckp))
+    model.load_state_dict(torch.load(arg.ckp), strict=True)
+
+    # model = model.to(device)
+    model.eval()
+    print('Model path {:s}. \nTesting...'.format(arg.ckp))
+
+    for path in folder_lists:
+        new_path = test_img_folder + '/' + path + '/*.png'
+        image_lists = sorted(glob.glob(new_path))
+        if not os.path.exists('results/' + path):
+            os.mkdir('results/' + path)
+        for image in tqdm(image_lists):
+            image_name = image.split('/')[-1]
+            # read images
+            img = cv2.imread(image, cv2.IMREAD_COLOR)
+            img = img * 1.0
+            img = torch.from_numpy(np.transpose(img[:, :, [2, 1, 0]], (2, 0, 1))).float()
+            img_LR = img.unsqueeze(0)
+            img_LR = img_LR.to(device)
+
+            with torch.no_grad():
+                output = model(img_LR).data.squeeze().float().cpu().clamp_(0, 255).numpy()
+            output = np.transpose(output[[2, 1, 0], :, :], (1, 2, 0))
+            output = output.round()
+            cv2.imwrite('results/{0}/{1}'.format(path, image_name), output)
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    working_dir = osp.dirname(osp.abspath(__file__))
+
+    # model parameter
+    parser.add_argument('--scale', default=4, type=int)
+    parser.add_argument('--patch_size', default=64, type=int)
+    parser.add_argument('--batch_size', default=8*2, type=int)
+    parser.add_argument('--step_batch_size', default=1, type=int)
+    parser.add_argument('--workers', default=8, type=int)
+    parser.add_argument('--seed', default=0, type=int)
+    parser.add_argument('--lr', type=float, default=1e-4)
+    parser.add_argument('--weight_decay', type=float, default=1e-4)
+    parser.add_argument("--start_epoch", default=0, type=int)
+    parser.add_argument('--epochs', type=int, default=400)
+    parser.add_argument('--n_colors', type=int, default=3,
+                        help='number of color channels to use')
+
+    # path
+    parser.add_argument('--HejingTest', type=str, metavar='PATH',
+                        default=osp.join(working_dir, 'datasets/AIRTC/TEST/'))
+    parser.add_argument('--test_data', type=str, default='/root/proj/NAIC/dataset/round2/test_img_lr/',
+                        help='number of feature maps reduction')
+
+    # check point
+    parser.add_argument("--ckp", default='ckp/model_epoch_43.pth', type=str)
+    parser.add_argument('--print_freq', default=1, type=int)
+    parser.add_argument("--logs_dir", default='log/', type=str)
+
+    args = parser.parse_args()
+    main(args)
+
